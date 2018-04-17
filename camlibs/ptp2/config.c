@@ -390,6 +390,7 @@ static int
 camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 	PTPParams	*params = &camera->pl->params;
 	PTPStorageIDs	sids;
+	int		tries;
 
 	GP_LOG_D ("preparing EOS capture...");
 
@@ -430,8 +431,14 @@ camera_prepare_canon_eos_capture(Camera *camera, GPContext *context) {
 		ptp_free_EOS_DI (&x);
 	}
 
-	/* Get the second bulk set of event data */
+	/* The new EOS occasionaly returned an empty event set ... likely because we are too fast. try again some times. */
 	C_PTP (ptp_check_eos_events (params));
+	tries = 10;
+	while (--tries && !have_eos_prop(camera,PTP_VENDOR_CANON,PTP_DPC_CANON_EOS_EVFOutputDevice)) {
+		GP_LOG_D("evfoutput device not found, retrying");
+		usleep(50*1000);
+		C_PTP (ptp_check_eos_events (params));
+	}
 
 	CR (camera_canon_eos_update_capture_target( camera, context, -1 ));
 
@@ -487,7 +494,7 @@ camera_prepare_capture (Camera *camera, GPContext *context)
 				return GP_OK;
 
 			propval.u16 = 0x0002;
-			C_PTP (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
+			LOG_ON_PTP_E (ptp_setdevicepropvalue (params, 0xd207, &propval, PTP_DTC_UINT16));
 			return GP_OK;
 		}
 		break;
@@ -5269,6 +5276,32 @@ _get_Canon_EOS_BatteryLevel(CONFIG_GET_ARGS) {
 }
 
 static int
+_get_Canon_EOS_StorageID(CONFIG_GET_ARGS) {
+	char buf[16];
+
+	if (dpd->DataType != PTP_DTC_UINT32)
+		return GP_ERROR;
+	gp_widget_new (GP_WIDGET_TEXT, _(menu->label), widget);
+	gp_widget_set_name (*widget, menu->name);
+	sprintf(buf,"%08x",dpd->CurrentValue.u32);
+	gp_widget_set_value(*widget, buf);
+	return GP_OK;
+}
+
+static int
+_put_Canon_EOS_StorageID(CONFIG_PUT_ARGS) {
+	char		*val = NULL;
+	unsigned int	x = 0;
+
+	CR (gp_widget_get_value(widget, &val));
+	if (!sscanf(val,"%x",&x))
+		return GP_ERROR_BAD_PARAMETERS;
+	propval->u32 = x;
+	return GP_OK;
+}
+
+
+static int
 _get_UINT32_as_time(CONFIG_GET_ARGS) {
 	time_t	camtime;
 
@@ -7272,6 +7305,7 @@ static struct submenu capture_settings_menu[] = {
 	{ N_("Scene Mode"),                     "scenemode",                PTP_DPC_NIKON_SceneMode,                PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_NIKON_SceneMode,               _put_NIKON_SceneMode },
 	{ N_("Aspect Ratio"),                   "aspectratio",              PTP_DPC_SONY_AspectRatio,               PTP_VENDOR_SONY,    PTP_DTC_UINT8,  _get_Sony_AspectRatio,              _put_Sony_AspectRatio },
 	{ N_("Aspect Ratio"),                   "aspectratio",              PTP_DPC_CANON_EOS_MultiAspect,          PTP_VENDOR_CANON,   PTP_DTC_UINT32,  _get_Canon_EOS_AspectRatio,        _put_Canon_EOS_AspectRatio },
+	{ N_("Storage Device"),                 "storageid",                PTP_DPC_CANON_EOS_CurrentStorage,       PTP_VENDOR_CANON,   PTP_DTC_UINT32,  _get_Canon_EOS_StorageID  ,        _put_Canon_EOS_StorageID },
 	{ N_("High ISO Noise Reduction"),       "highisonr",		    PTP_DPC_CANON_EOS_HighISOSettingNoiseReduction, PTP_VENDOR_CANON, PTP_DTC_UINT16, _get_Canon_EOS_HighIsoNr,     _put_Canon_EOS_HighIsoNr },
 	{ N_("HDR Mode"),                       "hdrmode",                  PTP_DPC_NIKON_HDRMode,                  PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_Nikon_OnOff_UINT8,             _put_Nikon_OnOff_UINT8 },
 	{ N_("HDR High Dynamic"),               "hdrhighdynamic",           PTP_DPC_NIKON_HDRHighDynamic,           PTP_VENDOR_NIKON,   PTP_DTC_UINT8,  _get_Nikon_HDRHighDynamic,          _put_Nikon_HDRHighDynamic },
@@ -8122,7 +8156,7 @@ _set_config (Camera *camera, const char *confname, CameraWidget *window, GPConte
 
 		memset (&dpd,0,sizeof(dpd));
 		memset (&propval,0,sizeof(propval));
-		ret = ptp_getdevicepropdesc (params,propid,&dpd);
+		ret = ptp_generic_getdevicepropdesc (params,propid,&dpd);
 		if (ret != PTP_RC_OK)
 			continue;
 		if (dpd.GetSet != PTP_DPGS_GetSet) {

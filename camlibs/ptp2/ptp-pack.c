@@ -1740,6 +1740,13 @@ ptp_unpack_EOS_FocusInfoEx (PTPParams* params, unsigned char** data, uint32_t da
 
 	if ((size >= datasize) || (size < 20))
 		return strdup("bad size 1");
+	/* If data is zero-filled, then it is just a placeholder, so nothing
+	   useful, but also not an error */
+	if (!focus_points_in_struct || !focus_points_in_use) {
+		ptp_debug(params, "skipped FocusInfoEx data (zero filled)");
+		return strdup("no focus points returned by camera");
+	}
+
 	/* every focuspoint gets 4 (16 bit number possible "-" sign and a x) and a ,*/
 	/* inital things around lets say 100 chars at most. 
 	 * FIXME: check selected when we decode it
@@ -1977,21 +1984,34 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 		ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_UNKNOWN;
 		ce[i].u.info = NULL;
 		switch (type) {
+		case PTP_EC_CANON_EOS_ObjectContentChanged:
+			if (size < PTP_ece_OA_ObjectID+1) {
+				ptp_debug (params, "size %d is smaller than %d", size, PTP_ece_OA_ObjectID+1);
+				break;
+			}
+			ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_OBJECTCONTENT_CHANGE;
+			ce[i].u.object.oid    		= dtoh32a(&curdata[PTP_ece_OA_ObjectID]);
+			break;
+		case PTP_EC_CANON_EOS_ObjectInfoChangedEx:	
 		case PTP_EC_CANON_EOS_ObjectAddedEx:
 			if (size < PTP_ece_OA_Name+1) {
 				ptp_debug (params, "size %d is smaller than %d", size, PTP_ece_OA_Name+1);
 				break;
 			}
-			ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_OBJECTINFO;
+			ce[i].type = ((type == PTP_EC_CANON_EOS_ObjectAddedEx) ? PTP_CANON_EOS_CHANGES_TYPE_OBJECTINFO : PTP_CANON_EOS_CHANGES_TYPE_OBJECTINFO_CHANGE);
 			ce[i].u.object.oid    		= dtoh32a(&curdata[PTP_ece_OA_ObjectID]);
 			ce[i].u.object.oi.StorageID	= dtoh32a(&curdata[PTP_ece_OA_StorageID]);
 			ce[i].u.object.oi.ParentObject	= dtoh32a(&curdata[PTP_ece_OA_Parent]);
 			ce[i].u.object.oi.ObjectFormat 	= dtoh16a(&curdata[PTP_ece_OA_OFC]);
 			ce[i].u.object.oi.ObjectCompressedSize= dtoh32a(&curdata[PTP_ece_OA_Size]);
 			ce[i].u.object.oi.Filename 	= strdup(((char*)&curdata[PTP_ece_OA_Name]));
-			ptp_debug (params, "event %d: objectinfo added oid %08lx, parent %08lx, ofc %04x, size %d, filename %s", i, ce[i].u.object.oid, ce[i].u.object.oi.ParentObject, ce[i].u.object.oi.ObjectFormat, ce[i].u.object.oi.ObjectCompressedSize, ce[i].u.object.oi.Filename);
+			if (type == PTP_EC_CANON_EOS_ObjectAddedEx) {
+				ptp_debug (params, "event %d: objectinfo added oid %08lx, parent %08lx, ofc %04x, size %d, filename %s", i, ce[i].u.object.oid, ce[i].u.object.oi.ParentObject, ce[i].u.object.oi.ObjectFormat, ce[i].u.object.oi.ObjectCompressedSize, ce[i].u.object.oi.Filename);
+			} else {
+				ptp_debug (params, "event %d: objectinfo changed oid %08lx, parent %08lx, ofc %04x, size %d, filename %s", i, ce[i].u.object.oid, ce[i].u.object.oi.ParentObject, ce[i].u.object.oi.ObjectFormat, ce[i].u.object.oi.ObjectCompressedSize, ce[i].u.object.oi.Filename);
+			}
 			break;
-                case PTP_EC_CANON_EOS_ObjectAddedUnknown:	/* FIXME: review if the data used is correct */
+		case PTP_EC_CANON_EOS_ObjectAddedUnknown:	/* FIXME: review if the data used is correct */
 			if (size < PTP_ece2_OA_Name+1) {
 				ptp_debug (params, "size %d is smaller than %d", size, PTP_ece2_OA_Name+1);
 				break;
@@ -2479,7 +2499,10 @@ ptp_unpack_CANON_changes (PTPParams *params, unsigned char* data, int datasize, 
 				i++;
 			}
 			if (mask & 0x0020) {
-				/* mask 0x0020: 6 bytes, 00 00 00 00 00 00 observed */
+				/* mask 0x0020: 6 bytes, 00 00 00 00 00 00 observed.
+				 * This seems to be the self-timer record: when active,
+				 * has the form of 00 00 01 00 XX XX, where the last two bytes
+				 * stand for the number of seconds remaining until the shot */
 				ce[i].type = PTP_CANON_EOS_CHANGES_TYPE_UNKNOWN;
 				ce[i].u.info = malloc(strlen("OLCInfo event 0x0020 content 0123456789ab")+1); 
 				sprintf(ce[i].u.info,"OLCInfo event 0x0020 content %02x%02x%02x%02x%02x%02x",
@@ -2888,4 +2911,93 @@ ptp_unpack_canon_directory (
 	}
 #undef ISOBJECT
 	return PTP_RC_OK;
+}
+
+static inline int
+ptp_unpack_ptp11_manifest (
+	PTPParams		*params,
+	unsigned char		*data,
+	unsigned int 		datalen,
+	uint64_t		*numoifs,
+	PTPObjectFilesystemInfo	**oifs
+) {
+	uint64_t		numberoifs, i;
+	unsigned int		curoffset;
+	PTPObjectFilesystemInfo	*xoifs;
+
+	if (datalen < 8)
+		return 0;
+	numberoifs = dtoh64ap(params,data);
+	curoffset = 8;
+	xoifs = calloc(sizeof(PTPObjectFilesystemInfo),numberoifs);
+	if (!xoifs)
+		return 0;
+
+	for (i = 0; i < numberoifs; i++) {
+		uint8_t len,dlen;
+		char *modify_date;
+		PTPObjectFilesystemInfo *oif = xoifs+i;
+
+		if (curoffset + 34 + 2 > datalen)
+			goto tooshort;
+
+		oif->ObjectHandle		= dtoh32ap(params,data+curoffset);
+		oif->StorageID 			= dtoh32ap(params,data+curoffset+4);
+		oif->ObjectFormat 		= dtoh16ap(params,data+curoffset+8);
+		oif->ProtectionStatus 		= dtoh16ap(params,data+curoffset+10);
+		oif->ObjectCompressedSize64 	= dtoh64ap(params,data+curoffset+12);
+		oif->ParentObject 		= dtoh32ap(params,data+curoffset+20);
+		oif->AssociationType 		= dtoh16ap(params,data+curoffset+24);
+		oif->AssociationDesc 		= dtoh32ap(params,data+curoffset+26);
+		oif->SequenceNumber 		= dtoh32ap(params,data+curoffset+30);
+		oif->Filename 			= ptp_unpack_string(params, data, curoffset+34, datalen, &len);
+		if (curoffset+34+len*2+1 > datalen)
+			goto tooshort;
+		modify_date			= ptp_unpack_string(params, data, curoffset+len*2+1+34, datalen, &dlen);
+		oif->ModificationDate 		= ptp_unpack_PTPTIME(modify_date);
+		free(modify_date);
+		curoffset += 34+len*2+dlen*2+2;
+	}
+	*numoifs = numberoifs;
+	*oifs = xoifs;
+	return 1;
+tooshort:
+	for (i = 0; i < numberoifs; i++)
+		if (xoifs[i].Filename) free (xoifs[i].Filename);
+	free (xoifs);
+	return 0;
+}
+
+static inline void
+ptp_unpack_chdk_lv_data_header (PTPParams *params, unsigned char* data, lv_data_header *header)
+{
+	int off = 0;
+	if (data==NULL)
+		return;
+	header->version_major = dtoh32a(&data[off]);
+	header->version_minor = dtoh32a(&data[off+=4]);
+	header->lcd_aspect_ratio = dtoh32a(&data[off+=4]);
+	header->palette_type = dtoh32a(&data[off+=4]);
+	header->palette_data_start = dtoh32a(&data[off+=4]);
+	header->vp_desc_start = dtoh32a(&data[off+=4]);
+	header->bm_desc_start = dtoh32a(&data[off+=4]);
+	if (header->version_minor > 1)
+		header->bmo_desc_start = dtoh32a(&data[off+=4]);
+}
+
+static inline void
+ptp_unpack_chdk_lv_framebuffer_desc (PTPParams *params, unsigned char* data, lv_framebuffer_desc *fd)
+{
+	int off = 0;
+	if (data==NULL)
+		return;
+	fd->fb_type = dtoh32a(&data[off]);
+	fd->data_start = dtoh32a(&data[off+=4]);
+	fd->buffer_width = dtoh32a(&data[off+=4]);
+	fd->visible_width = dtoh32a(&data[off+=4]);
+	fd->visible_height = dtoh32a(&data[off+=4]);
+	fd->margin_left = dtoh32a(&data[off+=4]);
+	fd->margin_top = dtoh32a(&data[off+=4]);
+	fd->margin_right = dtoh32a(&data[off+=4]);
+	fd->margin_bot = dtoh32a(&data[off+=4]);
 }

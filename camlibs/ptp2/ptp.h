@@ -1024,6 +1024,21 @@ struct _PTPObjectInfo {
 };
 typedef struct _PTPObjectInfo PTPObjectInfo;
 
+struct _PTPObjectFilesystemInfo {
+	uint32_t ObjectHandle;
+	uint32_t StorageID;
+	uint16_t ObjectFormat;
+	uint16_t ProtectionStatus;
+	uint64_t ObjectCompressedSize64;
+	uint32_t ParentObject;
+	uint16_t AssociationType;
+	uint32_t AssociationDesc;
+	uint32_t SequenceNumber;
+	char 	*Filename;
+	time_t	ModificationDate;
+};
+typedef struct _PTPObjectFilesystemInfo PTPObjectFilesystemInfo;
+
 /* max ptp string length INCLUDING terminating null character */
 
 #define PTP_MAXSTRLEN				255
@@ -1346,7 +1361,9 @@ enum _PTPCanon_changes_types {
 	PTP_CANON_EOS_CHANGES_TYPE_CAMERASTATUS,
 	PTP_CANON_EOS_CHANGES_TYPE_FOCUSINFO,
 	PTP_CANON_EOS_CHANGES_TYPE_FOCUSMASK,
-	PTP_CANON_EOS_CHANGES_TYPE_OBJECTREMOVED
+	PTP_CANON_EOS_CHANGES_TYPE_OBJECTREMOVED,
+	PTP_CANON_EOS_CHANGES_TYPE_OBJECTINFO_CHANGE,
+	PTP_CANON_EOS_CHANGES_TYPE_OBJECTCONTENT_CHANGE
 };
 
 struct _PTPCanon_New_Object {
@@ -2713,6 +2730,12 @@ uint16_t ptp_getthumb		(PTPParams *params, uint32_t handle,
 uint16_t ptp_deleteobject	(PTPParams* params, uint32_t handle,
 				uint32_t ofc);
 
+uint16_t ptp_moveobject		(PTPParams* params, uint32_t handle,
+				uint32_t storage, uint32_t parent);
+
+uint16_t ptp_copyobject		(PTPParams* params, uint32_t handle,
+				uint32_t storage, uint32_t parent);
+
 uint16_t ptp_sendobjectinfo	(PTPParams* params, uint32_t* store,
 				uint32_t* parenthandle, uint32_t* handle,
 				PTPObjectInfo* objectinfo);
@@ -2762,7 +2785,7 @@ uint16_t ptp_generic_setdevicepropvalue (PTPParams* params, uint16_t propcode,
                         	PTPPropertyValue* value, uint16_t datatype);
 uint16_t ptp_getfilesystemmanifest (PTPParams* params, uint32_t storage,
                         uint32_t objectformatcode, uint32_t associationOH,
-                        unsigned char** data);
+        		uint64_t *numoifs, PTPObjectFilesystemInfo **oifs);
 
 
 
@@ -3057,6 +3080,7 @@ uint16_t ptp_canon_getpairinginfo (PTPParams* params, uint32_t nr, unsigned char
 uint16_t ptp_canon_eos_getstorageids (PTPParams* params, PTPStorageIDs* storageids);
 uint16_t ptp_canon_eos_getstorageinfo (PTPParams* params, uint32_t p1, unsigned char**, unsigned int*);
 uint16_t ptp_canon_eos_getpartialobject (PTPParams* params, uint32_t oid, uint32_t off, uint32_t xsize, unsigned char**data);
+uint16_t ptp_canon_eos_getpartialobjectex (PTPParams* params, uint32_t oid, uint32_t off, uint32_t xsize, unsigned char**data);
 uint16_t ptp_canon_eos_getobjectinfoex (PTPParams* params, uint32_t storageid, uint32_t objectid, uint32_t unk,
         PTPCANONFolderEntry **entries, unsigned int *nrofentries);
 uint16_t ptp_canon_eos_setdevicepropvalueex (PTPParams* params, unsigned char* data, unsigned int size);
@@ -3387,6 +3411,7 @@ void ptp_error			(PTPParams *params, const char *format, ...);
 const char* ptp_get_property_description(PTPParams* params, uint16_t dpc);
 
 const char* ptp_get_opcode_name(PTPParams* params, uint16_t opcode);
+const char* ptp_get_event_code_name(PTPParams* params, uint16_t event_code);
 
 int
 ptp_render_property_value(PTPParams* params, uint16_t dpc,
@@ -3403,6 +3428,7 @@ uint16_t ptp_object_want (PTPParams *, uint32_t handle, unsigned int want, PTPOb
 void ptp_objects_sort (PTPParams *);
 uint16_t ptp_object_find (PTPParams *params, uint32_t handle, PTPObject **retob);
 uint16_t ptp_object_find_or_insert (PTPParams *params, uint32_t handle, PTPObject **retob);
+uint16_t ptp_list_folder (PTPParams *params, uint32_t storage, uint32_t handle);
 /* ptpip.c */
 void ptp_nikon_getptpipguid (unsigned char* guid);
 
@@ -3464,10 +3490,16 @@ uint16_t ptp_chdk_get_script_status(PTPParams* params, unsigned *status);
 uint16_t ptp_chdk_write_script_msg(PTPParams* params, char *data, unsigned size, int target_script_id, int *status);
 uint16_t ptp_chdk_read_script_msg(PTPParams* params, ptp_chdk_script_msg **msg);
 uint16_t ptp_chdk_get_live_data(PTPParams* params, unsigned flags, unsigned char **data, unsigned int *data_size);
+uint16_t ptp_chdk_parse_live_data (PTPParams* params, unsigned char *data, unsigned int data_size,
+				   lv_data_header *header, lv_framebuffer_desc *vpd, lv_framebuffer_desc *bmd);
 uint16_t ptp_chdk_call_function(PTPParams* params, int *args, int size, int *ret);
 
 /*uint16_t ptp_chdk_get_script_output(PTPParams* params, char **output ); */
 /*uint16_t ptp_chdk_get_video_settings(PTPParams* params, ptp_chdk_videosettings* vsettings);*/
+
+uint16_t ptp_fuji_getevents (PTPParams* params, uint16_t** events, uint16_t* count);
+
+
 
 #ifdef __cplusplus
 }
